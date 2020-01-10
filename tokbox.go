@@ -1,23 +1,14 @@
 package tokbox
 
 import (
-	"bytes"
-
 	"net/http"
 	"net/url"
 
-	"encoding/base64"
 	"encoding/json"
 
-	"crypto/hmac"
-	"crypto/sha1"
-
 	"fmt"
-	"math/rand"
 	"strings"
 	"time"
-
-	"sync"
 
 	"golang.org/x/net/context"
 
@@ -31,105 +22,97 @@ const (
 )
 
 const (
-	Days30  = 2592000 //30 * 24 * 60 * 60
-	Weeks1  = 604800  //7 * 24 * 60 * 60
-	Hours24 = 86400   //24 * 60 * 60
-	Hours2  = 7200    //60 * 60 * 2
-	Hours1  = 3600    //60 * 60
+	// Days30 represents 30 days duration in seconds
+	Days30 = 2592000 //30 * 24 * 60 * 60
+
+	// Weeks1 represents one week duration in seconds
+	Weeks1 = 604800 //7 * 24 * 60 * 60
+
+	// Hours24 represents 24 hours duration in seconds
+	Hours24 = 86400 //24 * 60 * 60
+
+	// Hours2 represents 2 hours duration in seconds
+	Hours2 = 7200 //60 * 60 * 2
+
+	// Hours1 represents 1 hour duration in seconds
+	Hours1 = 3600 //60 * 60
 )
 
+// MediaMode type - https://tokbox.com/developer/guides/create-session/#media-mode
 type MediaMode string
 
 const (
-	/**
-	 * The session will send streams using the OpenTok Media Router.
-	 */
+	// MediaRouter specifies the media mode to stream via the OpenTok Media Router
 	MediaRouter MediaMode = "disabled"
-	/**
-	* The session will attempt send streams directly between clients. If clients cannot connect
-	* due to firewall restrictions, the session uses the OpenTok TURN server to relay streams.
-	 */
-	P2P = "enabled"
+	// P2P specifies the media mode to stream directly between clients. If clients cannot connect
+	// due to firewall restrictions, the session uses the OpenTok TURN server to relay streams.
+	P2P MediaMode = "enabled"
 )
 
-type Role string
+// String returns the string value of a MediaMode instance
+func (i MediaMode) String() string {
+	return string(i)
+}
+
+// ArchiveMode type - https://tokbox.com/developer/rest/#session_id_production
+type ArchiveMode string
 
 const (
-	/**
-	* A publisher can publish streams, subscribe to streams, and signal.
-	 */
-	Publisher Role = "publisher"
-	/**
-	* A subscriber can only subscribe to streams.
-	 */
-	Subscriber = "subscriber"
-	/**
-	* In addition to the privileges granted to a publisher, in clients using the OpenTok.js 2.2
-	* library, a moderator can call the <code>forceUnpublish()</code> and
-	* <code>forceDisconnect()</code> method of the Session object.
-	 */
-	Moderator = "moderator"
+	// ArchiveModeManual allows the session to be archived manually but starts the session without archiving
+	// This is the default behavior
+	ArchiveModeManual ArchiveMode = "manual"
+	// ArchiveModeAlways automatically archive the session - https://tokbox.com/developer/guides/archiving/#automatic
+	ArchiveModeAlways ArchiveMode = "always"
 )
 
+// String returns the string value of a MediaMode instance
+func (i ArchiveMode) String() string {
+	return string(i)
+}
+
+// Tokbox struct represents the REST API abstraction as a library
 type Tokbox struct {
 	apiKey        string
 	partnerSecret string
-	BetaUrl       string //Endpoint for Beta Programs
+
+	// BetaURL should be used to override the base url by the url from thee beta program.
+	BetaURL string
 }
 
-type Session struct {
-	SessionId      string  `json:"session_id"`
-	ProjectId      string  `json:"project_id"`
-	PartnerId      string  `json:"partner_id"`
-	CreateDt       string  `json:"create_dt"`
-	SessionStatus  string  `json:"session_status"`
-	MediaServerURL string  `json:"media_server_url"`
-	T              *Tokbox `json:"-"`
+// CreateSessionRequest provides all information needed by a session to be created
+type CreateSessionRequest struct {
+	Location    string
+	MediaMode   MediaMode
+	ArchiveMode ArchiveMode
 }
 
+// New returns a new instance of Tokbox
 func New(apikey, partnerSecret string) *Tokbox {
 	return &Tokbox{apikey, partnerSecret, ""}
 }
 
-func (t *Tokbox) jwtToken() (string, error) {
-
-	type TokboxClaims struct {
-		Ist string `json:"ist,omitempty"`
-		jwt.StandardClaims
-	}
-
-	claims := TokboxClaims{
-		"project",
-		jwt.StandardClaims{
-			Issuer:    t.apiKey,
-			IssuedAt:  time.Now().UTC().Unix(),
-			ExpiresAt: time.Now().UTC().Unix() + (2 * 24 * 60 * 60), // 2 hours; //NB: The maximum allowed expiration time range is 5 minutes.
-			Id:        uuid.NewV4().String(),
-		},
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(t.partnerSecret))
-}
-
-// Creates a new tokbox session or returns an error.
+// CreateSession creates a new tokbox session or returns an error.
 // See README file for full documentation: https://github.com/pjebs/tokbox
 // NOTE: ctx must be nil if *not* using Google App Engine
-func (t *Tokbox) NewSession(location string, mm MediaMode, ctx ...context.Context) (*Session, error) {
+func (t *Tokbox) CreateSession(req *CreateSessionRequest, ctx ...context.Context) (*Session, error) {
 	params := url.Values{}
 
-	if len(location) > 0 {
-		params.Add("location", location)
+	if len(req.Location) > 0 {
+		params.Add("location", req.Location)
 	}
 
-	params.Add("p2p.preference", string(mm))
-
-	var endpoint string
-	if t.BetaUrl == "" {
-		endpoint = apiHost
-	} else {
-		endpoint = t.BetaUrl
+	p2pPreference := P2P
+	if len(req.MediaMode) > 0 {
+		p2pPreference = req.MediaMode
 	}
-	req, err := http.NewRequest("POST", endpoint+apiSession, strings.NewReader(params.Encode()))
+	params.Add("p2p.preference", p2pPreference.String())
+
+	if len(req.ArchiveMode) > 0 {
+		params.Add("archiveMode", req.ArchiveMode.String())
+	}
+
+	body := strings.NewReader(params.Encode())
+	r, err := http.NewRequest("POST", t.endpoint()+apiSession, body)
 	if err != nil {
 		return nil, err
 	}
@@ -140,13 +123,13 @@ func (t *Tokbox) NewSession(location string, mm MediaMode, ctx ...context.Contex
 		return nil, err
 	}
 
-	req.Header.Add("Accept", "application/json")
-	req.Header.Add("X-OPENTOK-AUTH", jwt)
+	r.Header.Add("Accept", "application/json")
+	r.Header.Add("X-OPENTOK-AUTH", jwt)
 
 	if len(ctx) == 0 {
 		ctx = append(ctx, nil)
 	}
-	res, err := client(ctx[0]).Do(req)
+	res, err := client(ctx[0]).Do(r)
 	if err != nil {
 		return nil, err
 	}
@@ -170,74 +153,29 @@ func (t *Tokbox) NewSession(location string, mm MediaMode, ctx ...context.Contex
 	return &o, nil
 }
 
-func (s *Session) Token(role Role, connectionData string, expiration int64) (string, error) {
-	now := time.Now().UTC().Unix()
+func (t *Tokbox) jwtToken() (string, error) {
 
-	dataStr := ""
-	dataStr += "session_id=" + url.QueryEscape(s.SessionId)
-	dataStr += "&create_time=" + url.QueryEscape(fmt.Sprintf("%d", now))
-	if expiration > 0 {
-		dataStr += "&expire_time=" + url.QueryEscape(fmt.Sprintf("%d", now+expiration))
-	}
-	if len(role) > 0 {
-		dataStr += "&role=" + url.QueryEscape(string(role))
-	}
-	if len(connectionData) > 0 {
-		dataStr += "&connection_data=" + url.QueryEscape(connectionData)
-	}
-	dataStr += "&nonce=" + url.QueryEscape(fmt.Sprintf("%d", rand.Intn(999999)))
-
-	h := hmac.New(sha1.New, []byte(s.T.partnerSecret))
-	n, err := h.Write([]byte(dataStr))
-	if err != nil {
-		return "", err
-	}
-	if n != len(dataStr) {
-		return "", fmt.Errorf("hmac not enough bytes written %d != %d", n, len(dataStr))
+	type TokboxClaims struct {
+		Ist string `json:"ist,omitempty"`
+		jwt.StandardClaims
 	}
 
-	preCoded := ""
-	preCoded += "partner_id=" + s.T.apiKey
-	preCoded += "&sig=" + fmt.Sprintf("%x:%s", h.Sum(nil), dataStr)
-
-	var buf bytes.Buffer
-	encoder := base64.NewEncoder(base64.StdEncoding, &buf)
-	encoder.Write([]byte(preCoded))
-	encoder.Close()
-	return fmt.Sprintf("T1==%s", buf.String()), nil
+	claims := TokboxClaims{
+		"project",
+		jwt.StandardClaims{
+			Issuer:    t.apiKey,
+			IssuedAt:  time.Now().UTC().Unix(),
+			ExpiresAt: time.Now().UTC().Unix() + (2 * 24 * 60 * 60), // 2 hours; //NB: The maximum allowed expiration time range is 5 minutes.
+			Id:        uuid.NewV4().String(),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(t.partnerSecret))
 }
 
-func (s *Session) Tokens(n int, multithread bool, role Role, connectionData string, expiration int64) []string {
-	ret := []string{}
-
-	if multithread {
-		var w sync.WaitGroup
-		var lock sync.Mutex
-		w.Add(n)
-
-		for i := 0; i < n; i++ {
-			go func(role Role, connectionData string, expiration int64) {
-				a, e := s.Token(role, connectionData, expiration)
-				if e == nil {
-					lock.Lock()
-					ret = append(ret, a)
-					lock.Unlock()
-				}
-				w.Done()
-			}(role, connectionData, expiration)
-
-		}
-
-		w.Wait()
-		return ret
-	} else {
-		for i := 0; i < n; i++ {
-
-			a, e := s.Token(role, connectionData, expiration)
-			if e == nil {
-				ret = append(ret, a)
-			}
-		}
-		return ret
+func (t *Tokbox) endpoint() string {
+	if t.BetaURL == "" {
+		return apiHost
 	}
+	return t.BetaURL
 }
